@@ -1,0 +1,125 @@
+# Isolates the agent, governance API, provider, and databases with private networks and scoped secrets.
+services:
+  db:
+    image: postgres:16.14-bookworm
+    environment:
+      POSTGRES_DB: governance
+      POSTGRES_USER: governance
+      POSTGRES_PASSWORD_FILE: /run/secrets/app_db_password
+    secrets: [app_db_password]
+    volumes: [app_data:/var/lib/postgresql/data]
+    networks: [governance_db]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U governance -d governance']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  provider-db:
+    image: postgres:16.14-bookworm
+    environment:
+      POSTGRES_DB: provider
+      POSTGRES_USER: provider
+      POSTGRES_PASSWORD_FILE: /run/secrets/provider_db_password
+    secrets: [provider_db_password]
+    volumes: [provider_data:/var/lib/postgresql/data]
+    networks: [provider_db]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U provider -d provider']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  provider:
+    build: { context: ., target: service }
+    command: [node, dist/src/provider-main.js]
+    environment:
+      HOST: 0.0.0.0
+      PORT: '3001'
+      PROVIDER_DATABASE_URL_FILE: /run/secrets/provider_database_url
+      PROVIDER_TOKEN_FILE: /run/secrets/provider_token
+    secrets: [provider_database_url, provider_token]
+    networks: [provider_link, provider_db]
+    depends_on:
+      provider-db: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/').then(r=>process.exit(r.status===401?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  api:
+    build: { context: ., target: service }
+    environment:
+      HOST: 0.0.0.0
+      DATABASE_URL_FILE: /run/secrets/database_url
+      PROVIDER_URL: http://provider:3001
+      PROVIDER_TOKEN_FILE: /run/secrets/provider_token
+    secrets: [database_url, provider_token]
+    networks: [agent_front, governance_db, provider_link]
+    ports: ['127.0.0.1:3000:3000']
+    depends_on:
+      db: { condition: service_healthy }
+      provider: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status===401?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  setup:
+    build: { context: ., target: service }
+    profiles: [tools]
+    command: [sh, -c, 'node dist/scripts/migrate.js && node dist/scripts/fixtures.js']
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      PROVIDER_DATABASE_URL_FILE: /run/secrets/provider_database_url
+      AGENT_A_TOKEN_FILE: /run/secrets/agent_a_token
+      AGENT_A2_TOKEN_FILE: /run/secrets/agent_a2_token
+      AGENT_B_TOKEN_FILE: /run/secrets/agent_b_token
+      OWNER_A_TOKEN_FILE: /run/secrets/owner_a_token
+      OWNER_B_TOKEN_FILE: /run/secrets/owner_b_token
+    secrets: [database_url, provider_database_url, agent_a_token, agent_a2_token, agent_b_token, owner_a_token, owner_b_token]
+    networks: [governance_db, provider_db]
+    depends_on:
+      db: { condition: service_healthy }
+      provider-db: { condition: service_healthy }
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  agent:
+    build: { context: ., target: agent }
+    profiles: [tools]
+    secrets:
+      - source: agent_a_token
+        target: agent_token
+    networks: [agent_front]
+    depends_on:
+      api: { condition: service_healthy }
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+
+networks:
+  agent_front: { internal: true }
+  governance_db: { internal: true }
+  provider_link: { internal: true }
+  provider_db: { internal: true }
+volumes:
+  app_data:
+  provider_data:
+secrets:
+  app_db_password: { file: .secrets/app-db-password }
+  provider_db_password: { file: .secrets/provider-db-password }
+  database_url: { file: .secrets/database-url }
+  provider_database_url: { file: .secrets/provider-database-url }
+  provider_token: { file: .secrets/provider-token }
+  agent_a_token: { file: .secrets/agent-a-token }
+  agent_a2_token: { file: .secrets/agent-a2-token }
+  agent_b_token: { file: .secrets/agent-b-token }
+  owner_a_token: { file: .secrets/owner-a-token }
+  owner_b_token: { file: .secrets/owner-b-token }

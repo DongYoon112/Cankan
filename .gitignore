@@ -1,0 +1,7 @@
+# Keeps credentials, installed dependencies, generated output, and local artifacts out of version control.
+node_modules/
+dist/
+.env
+.secrets/
+.local/
+*.log

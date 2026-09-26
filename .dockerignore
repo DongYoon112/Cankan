@@ -1,0 +1,10 @@
+# Excludes secrets, local artifacts, and development files from the container build context.
+.git
+.secrets
+.local
+node_modules
+dist
+test
+docs
+*.log
+.env

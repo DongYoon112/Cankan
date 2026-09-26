@@ -1,0 +1,30 @@
+{
+  "name": "cankan",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.20.1" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "fixtures": "tsx scripts/fixtures.ts",
+    "demo": "tsx scripts/demo.ts",
+    "start": "node dist/src/main.js",
+    "provider": "node dist/src/provider-main.js"
+  },
+  "license": "ISC",
+  "description": "Agent action governance with durable Kaji execution and simulated payments.",
+  "dependencies": {
+    "@irogane/kaji": "0.3.1",
+    "pg": "8.23.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/pg": "8.23.1",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}
