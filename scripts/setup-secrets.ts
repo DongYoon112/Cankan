@@ -15,6 +15,6 @@ const appPassword = await put('app-db-password', randomBytes(32).toString('hex')
 const providerPassword = await put('provider-db-password', randomBytes(32).toString('hex'));
 await put('database-url', `postgres://governance:${encodeURIComponent(appPassword)}@db:5432/governance`);
 await put('provider-database-url', `postgres://provider:${encodeURIComponent(providerPassword)}@provider-db:5432/provider`);
-for (const name of ['provider-token', 'agent-a-token', 'agent-a2-token', 'agent-b-token', 'owner-a-token', 'owner-b-token'])
+for (const name of ['provider-token', 'provider-lookup-token', 'agent-a-token', 'agent-a2-token', 'agent-b-token', 'owner-a-token', 'owner-b-token'])
   await put(name, randomBytes(32).toString('hex'));
 console.log('Local simulator secrets ready in .secrets/ (existing secrets preserved)');

@@ -37,15 +37,31 @@ function quoteEvidence(row: QuoteRow) {
   };
 }
 
-export function createProvider(pool: Pool, token: string): Server {
+export function createProvider(pool: Pool, token: string, lookupToken?: string): Server {
   if (!token) throw new Error('Provider token is required');
+  if (lookupToken === token) throw new Error('Lookup credential must be separate');
   const expected = Buffer.from(`Bearer ${token}`);
+  const lookupExpected = lookupToken ? Buffer.from(`Bearer ${lookupToken}`) : undefined;
   return serve(async (req, res) => {
     const supplied = Buffer.from(req.headers.authorization ?? '');
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    const payment = supplied.length === expected.length && timingSafeEqual(supplied, expected);
+    const lookup = lookupExpected && supplied.length === lookupExpected.length && timingSafeEqual(supplied, lookupExpected);
+    if (!payment && !lookup) {
       throw new HttpError(401, 'Unauthorized');
     }
     const path = new URL(req.url ?? '/', 'http://provider').pathname;
+    const outcomeMatch = /^\/organizations\/([a-fA-F0-9-]{36})\/operations\/([a-fA-F0-9-]{36})$/.exec(path);
+    if (req.method === 'GET' && outcomeMatch) {
+      if (!lookup) throw new HttpError(403, 'Lookup permission required');
+      const organizationId = z.uuid().parse(outcomeMatch[1]), operationId = z.uuid().parse(outcomeMatch[2]);
+      const row = (await pool.query<QuoteRow & { evidence: unknown }>(`SELECT q.*, c.evidence
+        FROM provider_charges c JOIN provider_quotes q ON q.id=c.quote_id
+        WHERE c.operation_id=$1 AND q.org_id=$2`, [operationId, organizationId])).rows[0];
+      if (!row) throw new HttpError(404, 'Outcome not found');
+      json(res, 200, { organizationId: row.org_id, quote: quoteEvidence(row), receipt: row.evidence });
+      return;
+    }
+    if (!payment) throw new HttpError(403, 'Payment permission required');
     const quoteMatch = /^\/quotes\/([A-Za-z0-9_-]{1,80})$/.exec(path);
     if (req.method === 'GET' && quoteMatch) {
       const result = await pool.query<QuoteRow>('SELECT * FROM provider_quotes WHERE id = $1', [quoteMatch[1]]);

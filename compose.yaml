@@ -36,7 +36,8 @@ services:
       PORT: '3001'
       PROVIDER_DATABASE_URL_FILE: /run/secrets/provider_database_url
       PROVIDER_TOKEN_FILE: /run/secrets/provider_token
-    secrets: [provider_database_url, provider_token]
+      PROVIDER_LOOKUP_TOKEN_FILE: /run/secrets/provider_lookup_token
+    secrets: [provider_database_url, provider_token, provider_lookup_token]
     networks: [provider_link, provider_db]
     depends_on:
       provider-db: { condition: service_healthy }
@@ -56,7 +57,7 @@ services:
       PROVIDER_URL: http://provider:3001
       PROVIDER_TOKEN_FILE: /run/secrets/provider_token
     secrets: [database_url, provider_token]
-    networks: [agent_front, governance_db, provider_link]
+    networks: [agent_front, governance_db, provider_link, api_host]
     ports: ['127.0.0.1:3000:3000']
     depends_on:
       db: { condition: service_healthy }
@@ -66,6 +67,21 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  worker:
+    build: { context: ., target: service }
+    command: [node, dist/src/worker-main.js]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      PROVIDER_URL: http://provider:3001
+      PROVIDER_LOOKUP_TOKEN_FILE: /run/secrets/provider_lookup_token
+    secrets: [database_url, provider_lookup_token]
+    networks: [governance_db, provider_link]
+    depends_on:
+      db: { condition: service_healthy }
+      provider: { condition: service_healthy }
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -105,6 +121,8 @@ services:
     mem_limit: 128m
 
 networks:
+  # The API alone joins this network so Docker can publish its loopback host port.
+  api_host: {}
   agent_front: { internal: true }
   governance_db: { internal: true }
   provider_link: { internal: true }
@@ -118,6 +136,7 @@ secrets:
   database_url: { file: .secrets/database-url }
   provider_database_url: { file: .secrets/provider-database-url }
   provider_token: { file: .secrets/provider-token }
+  provider_lookup_token: { file: .secrets/provider-lookup-token }
   agent_a_token: { file: .secrets/agent-a-token }
   agent_a2_token: { file: .secrets/agent-a2-token }
   agent_b_token: { file: .secrets/agent-b-token }

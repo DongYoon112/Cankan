@@ -11,8 +11,12 @@
     "migrate": "tsx scripts/migrate.ts",
     "fixtures": "tsx scripts/fixtures.ts",
     "demo": "tsx scripts/demo.ts",
+    "demo:recovery": "tsx scripts/demo-recovery.ts",
     "start": "node dist/src/main.js",
-    "provider": "node dist/src/provider-main.js"
+    "provider": "node dist/src/provider-main.js",
+    "worker": "node dist/src/worker-main.js",
+    "reconcile": "node dist/src/worker-main.js --once",
+    "verify:boundary": "node scripts/verify-boundary.mjs"
   },
   "license": "ISC",
   "description": "Agent action governance with durable Kaji execution and simulated payments.",

@@ -65,7 +65,7 @@ test('secret bootstrap escapes preserved passwords and retains existing secrets'
       assert.equal(decodeURIComponent(url.password), password);
     }
     const names = ['app-db-password', 'provider-db-password', 'database-url', 'provider-database-url',
-      'provider-token', 'agent-a-token', 'agent-a2-token', 'agent-b-token', 'owner-a-token', 'owner-b-token'];
+      'provider-token', 'provider-lookup-token', 'agent-a-token', 'agent-a2-token', 'agent-b-token', 'owner-a-token', 'owner-b-token'];
     const readSecrets = () => Promise.all(names.map(name => readFile(join(cwd, '.secrets', name), 'utf8')));
     const original = await readSecrets();
     assert.equal(original[names.indexOf('agent-a-token')], 'preserved-test-token\n');

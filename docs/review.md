@@ -1,6 +1,6 @@
 # Increment review evidence
 
-Reviewed 2026-09-26. The repository initially contained only an empty Git repository, with no commits, instructions, code, or tooling to preserve. Implemented the attachment's stages 0–2 scope. Later-stage recovery, approvals, assessments, dashboards, MCP, real payment credentials, real emails, and Jev calls are absent. Required approvals/assessments fail closed.
+Initial review: 2026-09-26. The repository initially contained only an empty Git repository, with no commits, instructions, code, or tooling to preserve. That increment implemented stages 0–2; recovery was absent at that review. **Stage 3 success reconciliation and its verification are recorded below (2026-09-27).** Approvals, assessments, dashboards, MCP, real payment credentials, real emails, and Jev calls remain absent. Required approvals/assessments fail closed.
 
 ## Commands actually run
 
@@ -67,7 +67,7 @@ Five confirmed small errors were fixed without adding dependencies:
 - Bootstrap URLs now escape preserved passwords containing reserved URL characters. A temporary-directory regression verifies correct URL parsing and preservation of all existing secrets on rerun.
 - JSON content types are normalized for case and surrounding whitespace. Valid media types such as `Application/JSON ; charset=utf-8` now reach schema validation; unsupported types still return 415.
 
-Enabled TypeScript's unused-local and unused-parameter checks, removed empty package metadata, and filled in the package description. Typecheck, build, agent-script syntax, all 17 tests, JSON/Compose parsing, purpose headers, and whitespace/final-newline checks passed. Full `npm audit` reported zero vulnerabilities. Docker runtime checks remain unexecuted as described below.
+Enabled TypeScript's unused-local and unused-parameter checks, removed empty package metadata, and filled in the package description. Typecheck, build, agent-script syntax, all 17 tests, JSON/Compose parsing, purpose headers, and whitespace/final-newline checks passed. Full `npm audit` reported zero vulnerabilities. Docker runtime checks were still unexecuted at that point; subsequent runtime evidence follows below.
 
 ## Senior review follow-up
 
@@ -78,11 +78,88 @@ Enabled TypeScript's unused-local and unused-parameter checks, removed empty pac
 
 Final typecheck, build, and **18 tests passed** with zero failures/skips; configuration parsing, purpose headers, and whitespace checks passed. The payment scope and durable pause/revocation cutoff remain unchanged.
 
-## Remaining limits and unrun commands
+## Docker runtime verification (2026-09-27)
 
-**Container isolation has not been runtime verified here.** Docker/Compose build, healthchecks, private-network reachability, secret mounting, read-only filesystem, and container-socket absence still need `docker compose run --rm agent` on a working engine. The topology and client checks are implemented and statically inspected; they are not reported as passed. Follow the setup commands in [README](../README.md).
+**The local Compose demo and agent isolation checks passed on Docker Desktop.** This follow-up supersedes the earlier Docker runtime limitation above. Environment: Windows host, Docker Desktop 4.63.0, Linux engine 29.2.1 (linux/amd64), Compose v5.0.2. Docker Desktop was initially stopped and was started for this verification. Fresh simulator secrets and database volumes were created; no existing simulator data was reset.
 
-Kaji's package API, PostgreSQL race protection, credentials, and provider ledger effects were runtime verified. This is a local simulated-payment increment, not a production deployment certification. Database accounts own their own databases; public edge controls, TLS, credential rotation, and finer database privileges remain deployment work. No automated reconciliation exists. Unknown or abandoned dispatches remain visible and hold budget indefinitely; only later, deliberately implemented recovery may resolve them using the same provider identity and evidence. Per-organization serialization is conservative and may limit throughput.
+| Command/check | Actual result |
+|---|---|
+| `node scripts/setup-secrets.ts` (host Node 24.11.0) | Passed; generated ignored local secrets |
+| `docker compose build` | Passed; dependency installation and TypeScript compilation succeeded inside the service build |
+| `docker compose up -d --wait db provider-db` | Both PostgreSQL containers healthy |
+| `docker compose run --rm --build setup` | Migrations and two-organization fixtures succeeded |
+| `docker compose up -d --wait provider api` | Provider and API healthy |
+| `docker compose run --rm --build agent` | Exit 0; application and Kaji both `succeeded`; printed `Agent boundary checks passed` |
+| Independent provider/governance SQL reads | Exactly one provider charge for 500 SIM_CENTS; matching receipt and successful application attempt; task reservation 500 |
+| Agent script boundary assertions | Provider and both databases unreachable by service name; privileged secret files, trusted source, and Docker socket unreadable; privileged environment variables absent |
+| Additional one-off probe through `docker compose run --rm --no-deps -T agent node --input-type=module -` | API reachable (unauthenticated HTTP 401); TCP connections to both provider IPs and both database IPs rejected; only `agent_token` mounted; non-root UID; `/tmp` write rejected with `EROFS`; effective capabilities zero; `NoNewPrivs` set to 1 |
+| Docker port-binding inspection | API configured for `127.0.0.1:3000`; databases/provider have no published host ports |
+| `docker compose stop` | All four service containers exited with code 0; database volumes and local secrets preserved |
+
+Demo operation: `sandbox-0584652c-3e63-4ac5-a573-1a030634dbd8`. Provider operation: `294e4e17-3884-4d39-bd42-648ad625e8a7`. Receipt: `956e7b8d-ec94-4e73-8646-96b6f8453fbb`. The independent ledger evidence matched the agent's returned receipt. The additional probe was supplied through stdin without adding source mounts or privileged secrets to the agent container. This follow-up exercised the deployment and isolation checks; it did not rerun the separate 18-test integration suite.
+
+## Stage 3 implementation and verification (2026-09-27)
+
+Inspected the actual initial-commit checkout (`9cca435`), existing Docker review edits, schemas, claim/record transactions, simulator, and tests before extending. No repository `AGENTS.md` was present. Installed and applied the user-requested [Ponytail](https://github.com/DietrichGebert/ponytail) 4.10.0 skill through its Codex marketplace; `codex plugin list --json` confirmed installed/enabled. No application dependency was added or upgraded. Installed Kaji 0.3.1 declarations still define `.parse(input)`, `claim(ExecutionClaim)`, and `record(StoredExecution)`; its runtime calls the supplied parser's `.parse()`.
+
+Environment: Windows, host Node **24.11.0**, npm **11.6.1**, Docker Desktop **4.63.0**, engine **29.2.1**, Compose **v5.0.2**, container Node **22.23.3**, PostgreSQL **16.14**. PowerShell commands use `npm.cmd` because this host's execution policy blocks `npm.ps1`. The sandboxed dependency download stalled; the authorized host `npm.cmd ci --fetch-retries=0` succeeded (49 packages, zero audit vulnerabilities). Different platform-specific optional packages explain the earlier Linux install count.
+
+Baseline before code changes: `npm.cmd run typecheck`, `npm.cmd run build`, and the existing PostgreSQL suite all passed: **18 tests, zero failed/skipped, 9.083 s**. Tests used a new disposable container, not the existing demo databases:
+
+```powershell
+docker run -d --name cankan-stage3-test-20260927 -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=cankan_test -p 127.0.0.1:55432:5432 postgres:16.14-bookworm
+$env:TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/cankan_test'
+npm.cmd run typecheck
+npm.cmd run build
+npm.cmd test
+```
+
+Final result for those three checks: **passed; 36 tests, zero failed/skipped, 16.800 s**. Integration suites create uniquely named databases and drop only their own databases. Additional agent/controller JavaScript syntax and `git diff --check` passed.
+
+| Stage 3 acceptance check | Actual evidence |
+|---|---|
+| Existing-data migration | Constructed old schema with an existing dispatch, unresolved attempt, and 500 reservation; ran migration twice; job backfilled and reservation unchanged |
+| Scoped lookup authority | Lookup credential can read matching organization/operation; wrong organization returns 404, payment token returns 403, agent token returns 401; lookup token POST returns 403 |
+| Lost reply recovery | Two independent worker processes compete; one lookup resolves the actual receipt, no extra POST, one charge, reservation unchanged, Kaji remains `unknown` |
+| Interrupted dispatch / missing evidence | 404 retains unresolved/null-Kaji state and budget, schedules backoff; later original submission can charge and then be reconciled |
+| Worker/API crashes | Killed a worker holding a lease; successor recovers. Separately killed an API process at a database barrier after actual provider commit but before result persistence; job survives and recovery succeeds with Kaji still null |
+| Lease/generation/version fencing | Expired sole worker cannot save success or error; old generation cannot overwrite successor; save blocked on an attempt lock rechecks expiry after the wait; changed application version rejects save |
+| Atomic application/job/audit resolution | Test-only audit trigger failure rolls back receipt, attempt version, and job completion; same valid claim subsequently succeeds |
+| Evidence validation | Tested wrong organization, operation, quote, fingerprint, seller, amounts, fees, total, currency, malformed/oversized content, HTTP 503/404, and a real timed-out request; none releases budget |
+| Exhaustion | Eight claimed attempts require attention without release; expired final claim cannot cause a ninth lookup or accept a stale error |
+| Late original results | Recovery-first matching success and timeout retain application success; identical results replay harmlessly; contradictory receipt audited without replacing accepted evidence; original-first completion fences the worker |
+| Controls and isolation | Deterministic database barriers exercise pause/revoke in both commit orderings; control-first blocks dispatch, dispatch-first may finish; new operations remain blocked; lookup recovery works while paused or revoked |
+| Status permissions | Original agent/organization owner can read reconciliation; sibling agent and foreign organizations cannot; arbitrary diagnostics and credentials do not appear in status |
+
+Tests count incoming provider POST requests as well as inspect committed ledger effects, so provider deduplication cannot hide a worker resubmission. Fault servers and database barrier/failure triggers exist only in tests and uniquely named test databases. Lease-expiry tests deliberately change lease timestamps in those databases; commit-order tests wait for observable PostgreSQL lock barriers rather than using sleeps to choose the ordering.
+
+Docker verification used the separate Compose project `cankan-stage3-verify`, with fresh project volumes. Original `cankan` demo containers/volumes were left untouched. Secret setup added the lookup credential while preserving existing files.
+
+| Actual command/check | Result |
+|---|---|
+| `node dist/scripts/setup-secrets.js` | Passed; existing credentials preserved |
+| `docker compose -p cankan-stage3-verify build api provider worker setup agent` | All images built |
+| `docker compose -p cankan-stage3-verify up -d --wait db provider-db` | Both databases healthy |
+| `docker compose -p cankan-stage3-verify run --rm setup` | Migrations and fixtures passed |
+| `docker compose -p cankan-stage3-verify up -d --build --wait provider api worker` | API/provider healthchecks passed; background worker running |
+| `$env:COMPOSE_PROJECT_NAME='cankan-stage3-verify'; node scripts/verify-boundary.mjs` | Passed before and after service recreation and again after the negative control; seven live private hostname/IP targets blocked, authenticated API positive control passed |
+| `$env:AGENT_A_TOKEN_FILE='.secrets/agent-a-token'; npm.cmd run demo:recovery` | Background worker reconciled lost reply in one lookup; application succeeded, Kaji unknown, independent ledger receipt matched |
+| `docker compose -p cankan-stage3-verify run --rm --no-deps agent` | Normal purchase and original boundary assertions passed |
+| `docker compose -p cankan-stage3-verify stop worker`, second recovery demo, then `docker compose -p cankan-stage3-verify run --rm --no-deps worker node dist/src/worker-main.js --once` | One-pass command saved exactly one observation; waiting demo succeeded with Kaji unknown |
+| Stop provider, run boundary controller | Expected exit 1; a stopped private service cannot masquerade as successful isolation. Provider restored and controller passed again |
+| Independent final SQL inspection | Three charges total (normal purchase plus two recovery demos), all attempts succeeded; recovery lookup counts 0/1/1; task reservation exactly 1,500 |
+| Actual worker-container credential probe | Only database URL and lookup token mounted; payment-token environment absent; authenticated POST `/charges` rejected with HTTP 403 |
+| `docker compose -p cankan-stage3-verify stop`; `docker stop cankan-stage3-test-20260927` | Verification services stopped; original demo data, verification volumes, and all local credentials preserved |
+
+Runtime verification found and fixed a pre-existing host-port issue: the API's configured loopback binding had no effective published port while all its networks were internal (`NetworkSettings.Ports` was empty for 3000). Added a network used only by the API; `docker port` now reports `127.0.0.1:3000`, the host recovery demo passes, and private service/agent isolation checks still pass. Docker documents internal networks as externally isolated in its [Compose network reference](https://docs.docker.com/reference/compose-file/networks/#internal).
+
+Background demo operation: `recovery-4d35b781-684c-4336-8a8b-355e36a75f97`, provider operation `9fb98f17-9c13-4ecc-bab7-35c823889ca8`, receipt `fba464bc-3f4d-435b-89e2-0f71ae322747`. One-pass operation: `recovery-f9d0b862-2286-4002-8e14-50afb4e8b771`, receipt `3c2d4e93-5a82-458f-9aac-e0a2f2236442`.
+
+Unexecuted/deferred: enabled-IPv6 runtime topology (this Docker stack assigned IPv4 only; controller discovers IPv6 when enabled), public deployment hardening, terminal no-effect/cancellation protocols, and automatic release. No real payments were used. Historical Linux fallback instructions below document the earlier environment, not a new dependency.
+
+## Remaining limits
+
+Kaji's package API, PostgreSQL race protection, credentials, provider ledger effects, success reconciliation, and container boundaries were runtime verified. This is a local simulated-payment increment, not a production deployment certification. Database accounts own their own databases; public edge controls, TLS, credential rotation, and finer database privileges remain deployment work. Recovery confirms matching committed effects using their original identities. Missing/invalid evidence and retry exhaustion retain unresolved state and budget indefinitely; successful recovery also keeps completed spending counted. Cancellation and automatic release require a future durable finality protocol. Per-organization dispatch serialization is conservative and may limit throughput.
 
 All direct dependency versions and lockfile details are in [README](../README.md#dependencies). The [architecture note](architecture.md) documents every persistence/crash gap and the pause/revocation cutoff.
 

@@ -6,7 +6,8 @@ import type { Pool } from 'pg';
 import { z } from 'zod';
 import { transaction } from './db.js';
 import { HttpError, json, readJson, serve } from './http.js';
-import { canonicalSchema, fingerprint, identifier, quoteSchema, receiptSchema, requestSchema, tokenHash, type CanonicalInput } from './shared.js';
+import { canonicalSchema, fingerprint, identifier, quoteSchema, requestSchema, tokenHash, verifiedReceipt, type CanonicalInput } from './shared.js';
+import { acceptReceipt, lockAttempt, observe, resolveJob } from './recovery.js';
 
 type Principal = { id: string; org_id: string; role: 'agent' | 'owner' };
 type Operation = {
@@ -85,19 +86,34 @@ export class PgExecutionStore implements ExecutionStore {
     const op = this.operation;
     const safe: StoredExecution = execution.status === 'succeeded' ? execution
       : { status: execution.status, evidence: execution.evidence, error: { code: `execution_${execution.status}` } };
-    await transaction(this.pool, async client => {
-      const updated = await client.query(`UPDATE executions SET outcome=$1,recorded_at=now()
-        WHERE id=$2 AND operation_id=$3 AND capability=$4 AND principal_id=$5 AND idempotency_key=$6
-          AND input_fingerprint=$7 AND outcome IS NULL RETURNING id`,
-      [safe, execution.evidence.executionId, op.id, execution.evidence.capability, execution.evidence.principalId,
-        execution.evidence.idempotencyKey, execution.evidence.inputFingerprint]);
-      if (updated.rowCount !== 1) throw new Error('Execution record mismatch');
-      if (safe.status === 'succeeded') {
-        const attempt = await client.query(`UPDATE attempts SET state='succeeded',evidence=$1,finished_at=now()
-          WHERE operation_id=$2 AND state='unresolved'`, [safe.result, op.id]);
-        if (attempt.rowCount !== 1) throw new Error('Missing dispatch');
+    const consistent = await transaction(this.pool, async client => {
+      const attempt = await lockAttempt(client, op.id);
+      const job = (await client.query<{ generation: number }>('SELECT generation FROM reconciliation_jobs WHERE operation_id=$1 FOR UPDATE', [op.id])).rows[0];
+      const existing = (await client.query<{ outcome: StoredExecution | null }>(`SELECT outcome FROM executions
+        WHERE id=$1 AND operation_id=$2 AND capability=$3 AND principal_id=$4 AND idempotency_key=$5
+          AND input_fingerprint=$6 FOR UPDATE`,
+      [execution.evidence.executionId, op.id, execution.evidence.capability, execution.evidence.principalId,
+        execution.evidence.idempotencyKey, execution.evidence.inputFingerprint])).rows[0];
+      if (!existing) throw new Error('Execution record mismatch');
+      if (existing.outcome) {
+        if (fingerprint(existing.outcome) === fingerprint(safe)) return true;
+        if (attempt) await observe(client, op.id, job?.generation ?? 0, 'kaji', 'contradictory_kaji_result', { fingerprint: fingerprint(safe) });
+        return false;
       }
+      await client.query('UPDATE executions SET outcome=$1,recorded_at=clock_timestamp() WHERE id=$2', [safe, execution.evidence.executionId]);
+      if (safe.status === 'succeeded') {
+        if (!attempt || !job) throw new Error('Missing dispatch');
+        const receipt = verifiedReceipt(safe.result, op.input, op.provider_operation_id);
+        if (!await acceptReceipt(client, op.id, attempt, receipt)) {
+          await observe(client, op.id, job.generation, 'kaji', 'contradictory_receipt', receipt);
+          return false;
+        }
+        await resolveJob(client, op.id);
+        await observe(client, op.id, job.generation, 'kaji', 'confirmed', receipt);
+      }
+      return true;
     });
+    if (!consistent) throw new Error('Conflicting execution evidence');
   }
 }
 
@@ -134,10 +150,12 @@ export function createGovernance(pool: Pool, providerUrl: string, providerToken:
   }
   async function status(op: Operation) {
     const row = (await pool.query(`SELECT d.allowed,d.reason,d.requires_approval,e.outcome,
-      a.state AS attempt_state,a.evidence,a.started_at,x.recorded_at,x.reserved_cents
+      a.state AS attempt_state,a.evidence,a.started_at,x.recorded_at,x.reserved_cents,
+      j.state AS recovery_state,j.last_check_at,j.next_check_at,j.lookup_count,j.last_error
       FROM operations o LEFT JOIN decisions d ON d.operation_id=o.id
       LEFT JOIN executions e ON e.operation_id=o.id LEFT JOIN attempts a ON a.operation_id=o.id
-      LEFT JOIN dispatches x ON x.operation_id=o.id WHERE o.id=$1`, [op.id])).rows[0]!;
+      LEFT JOIN dispatches x ON x.operation_id=o.id
+      LEFT JOIN reconciliation_jobs j ON j.operation_id=o.id WHERE o.id=$1`, [op.id])).rows[0]!;
     const state = row.attempt_state === 'succeeded' ? 'succeeded'
       : row.attempt_state ? 'unresolved'
       : row.reason === 'approval_required' ? 'blocked_approval'
@@ -147,6 +165,9 @@ export function createGovernance(pool: Pool, providerUrl: string, providerToken:
       decision: row.reason ? { allowed: row.allowed, reason: row.reason } : null,
       dispatch: row.recorded_at ? { recordedAt: row.recorded_at, reservedCents: row.reserved_cents } : null,
       attempt: row.attempt_state ? { state: row.attempt_state, providerOperationId: op.provider_operation_id, startedAt: row.started_at, evidence: row.evidence } : null,
+      reconciliation: row.recovery_state ? { status: row.recovery_state, lastCheck: row.last_check_at,
+        nextCheck: row.next_check_at, lookupCount: row.lookup_count, lastError: row.last_error,
+        evidence: row.evidence } : null,
       kaji: row.outcome ?? null };
   }
   async function execute(op: Operation): Promise<void> {
@@ -163,15 +184,9 @@ export function createGovernance(pool: Pool, providerUrl: string, providerToken:
       execute: async () => {
         const dispatch = await pool.query('SELECT 1 FROM dispatches WHERE operation_id=$1', [op.id]);
         if (dispatch.rowCount !== 1) throw new Error('Missing authorized dispatch');
-        const receipt = receiptSchema.parse(await provider('/charges', {
+        return verifiedReceipt(await provider('/charges', {
           operationId: op.provider_operation_id, quoteId: saved.quote.id, quoteFingerprint: fingerprint(saved.quote),
-        }));
-        if (receipt.operationId !== op.provider_operation_id || receipt.quoteId !== saved.quote.id
-          || receipt.quoteFingerprint !== fingerprint(saved.quote) || receipt.seller !== saved.quote.seller
-          || receipt.amountCents !== saved.quote.amountCents || receipt.feeCents !== saved.quote.feeCents
-          || receipt.totalCents !== saved.quote.amountCents + saved.quote.feeCents || receipt.currency !== saved.quote.currency)
-          throw new Error('Provider evidence mismatch');
-        return receipt;
+        }), saved, op.provider_operation_id);
       },
     });
     // Static registry, no user-selected modules or raw adapter endpoint. No approval fallback.

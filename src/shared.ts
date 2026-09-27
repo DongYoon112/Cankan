@@ -34,3 +34,14 @@ export const receiptSchema = z.strictObject({
   amountCents: cents, feeCents: cents, totalCents: z.number().int().min(0).max(2_000_000),
   currency: z.literal('SIM_CENTS'), chargedAt: z.iso.datetime(),
 });
+export const outcomeSchema = z.strictObject({ organizationId: z.uuid(), quote: quoteSchema, receipt: receiptSchema });
+export type Receipt = z.infer<typeof receiptSchema>;
+export function verifiedReceipt(value: unknown, input: CanonicalInput, providerOperationId: string): Receipt {
+  const receipt = receiptSchema.parse(value), quote = input.quote;
+  if (quote.organizationId !== input.organizationId || receipt.operationId !== providerOperationId
+    || receipt.quoteId !== quote.id || receipt.quoteFingerprint !== fingerprint(quote)
+    || receipt.seller !== quote.seller || receipt.amountCents !== quote.amountCents || receipt.feeCents !== quote.feeCents
+    || receipt.totalCents !== quote.amountCents + quote.feeCents || receipt.currency !== quote.currency)
+    throw new Error('Provider evidence mismatch');
+  return receipt;
+}

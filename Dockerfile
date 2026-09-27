@@ -20,5 +20,6 @@ CMD ["node", "dist/src/main.js"]
 FROM node:22-bookworm-slim AS agent
 WORKDIR /agent
 COPY scripts/agent.mjs ./agent.mjs
+COPY scripts/boundary-probe.mjs ./boundary-probe.mjs
 USER node
 CMD ["node", "agent.mjs"]
